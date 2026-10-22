@@ -1,0 +1,32 @@
+<?php
+require_once __DIR__.'/includes/bootstrap.php';require_login();
+$u=current_user();$msg='';
+$s=$pdo->prepare('SELECT id,username,full_name,department,role,instructor_id,profile_image FROM users WHERE id=?');$s->execute([(int)$u['id']]);$dbu=$s->fetch();
+$instructors=$pdo->query('SELECT id,full_name,department FROM instructors WHERE is_active=1 ORDER BY full_name')->fetchAll();
+if($_SERVER['REQUEST_METHOD']==='POST'){
+ verify_csrf();$uploadedPath=$dbu['profile_image']??null;
+ if(isset($_FILES['profile_photo']) && ($_FILES['profile_photo']['error']??UPLOAD_ERR_NO_FILE)!==UPLOAD_ERR_NO_FILE){$file=$_FILES['profile_photo'];if(($file['error']??UPLOAD_ERR_OK)!==UPLOAD_ERR_OK)$msg='Profile photo upload failed. Please choose the file again.';elseif((int)$file['size']>2*1024*1024)$msg='Profile photo must be 2 MB or smaller.';elseif(!is_uploaded_file($file['tmp_name']))$msg='Invalid profile photo upload.';else{$mime=(new finfo(FILEINFO_MIME_TYPE))->file($file['tmp_name']);$allowed=['image/jpeg'=>'jpg','image/png'=>'png','image/webp'=>'webp'];if(!isset($allowed[$mime]))$msg='Upload a JPG, PNG, or WebP image.';else{$dir=__DIR__.'/uploads/profiles';if(!is_dir($dir)&&!mkdir($dir,0755,true)&&!is_dir($dir))$msg='Could not create the profile-photo folder.';else{$filename=bin2hex(random_bytes(16)).'.'.$allowed[$mime];if(move_uploaded_file($file['tmp_name'],$dir.'/'.$filename))$uploadedPath='uploads/profiles/'.$filename;else $msg='Could not save the profile photo.';}}}}
+ $name=trim($_POST['full_name']??'');$username=trim($_POST['username']??'');$dept=trim($_POST['department']??'');$newpass=$_POST['new_password']??'';$confirm=$_POST['confirm_password']??'';$iid=(int)($dbu['instructor_id']??0);
+ if($msg==='') { if(!$name||!$username)$msg='Name and username are required.';
+ elseif($newpass!==''&&strlen($newpass)<12)$msg='New password must contain at least 12 characters.';
+ elseif($newpass!==$confirm)$msg='New password and confirmation do not match.';
+ elseif($dbu['role']==='self' && !in_array((int)($_POST['instructor_id']??0),array_map(fn($x)=>(int)$x['id'],$instructors),true))$msg='Select your registered instructor profile.';
+ elseif($dbu['role']==='self' && (int)$dbu['instructor_id']>0 && (int)($_POST['instructor_id']??0)!==(int)$dbu['instructor_id'])$msg='Your instructor profile is already linked. Contact the administrator if it needs correction.';
+ elseif($dbu['role']==='self' && (int)$dbu['instructor_id']===0 && mb_strtolower(trim($name))!==mb_strtolower(trim((function()use($pdo){$q=$pdo->prepare('SELECT full_name FROM instructors WHERE id=? AND is_active=1');$q->execute([(int)($_POST['instructor_id']??0)]);return (string)$q->fetchColumn();})())))$msg='For security, the instructor name must match your account name. If the names differ, ask the administrator to link your account.';
+ else{
+  if($dbu['role']==='self')$iid=(int)$_POST['instructor_id'];
+  try{
+   if($newpass!==''){$sql=$pdo->prepare('UPDATE users SET full_name=?,username=?,department=?,instructor_id=?,password_hash=?,profile_image=? WHERE id=?');$sql->execute([$name,$username,$dept,$iid?:null,password_hash($newpass,PASSWORD_DEFAULT),$uploadedPath,(int)$u['id']]);}
+   else{$sql=$pdo->prepare('UPDATE users SET full_name=?,username=?,department=?,instructor_id=?,profile_image=? WHERE id=?');$sql->execute([$name,$username,$dept,$iid?:null,$uploadedPath,(int)$u['id']]);}
+   $_SESSION['user']['instructor_id']=$iid?:null;$_SESSION['user']['full_name']=$name;$_SESSION['user']['username']=$username;$_SESSION['user']['department']=$dept;$_SESSION['user']['profile_image']=$uploadedPath;
+   flash('success','Your profile was updated.');redirect('profile.php');
+  }catch(PDOException $e){$msg='Could not update profile. Username may already be used.';}
+ }}
+}
+page_header('My profile');show_flash();
+?>
+<div class="page-intro"><div><div class="eyebrow">PERSONAL SETTINGS</div><h1>My profile</h1><p>Update your personal details, upload a profile photo, and change your password.</p></div></div>
+<?php if($msg):?><div class="alert error"><?=e($msg)?></div><?php endif;?>
+<section class="panel narrow"><form method="post" enctype="multipart/form-data" class="form-grid"><input type="hidden" name="csrf_token" value="<?=e(csrf_token())?>"><?php if(!empty($dbu['profile_image'])):?><div class="wide profile-photo-preview"><img class="profile-photo-large" src="<?=BASE_URL.'/'.e($dbu['profile_image'])?>" alt="Current profile photo"><span class="muted">Current profile photo</span></div><?php endif;?><label class="wide">Upload or change profile photo (JPG, PNG, or WebP; max 2 MB)<input type="file" name="profile_photo" accept="image/jpeg,image/png,image/webp" capture="user"><small class="muted">Choose a photo from your device. Your photo will appear beside your name in the top-right corner.</small></label><label>Full name<input name="full_name" value="<?=e($_POST['full_name']??$dbu['full_name'])?>" required></label><label>Username<input name="username" value="<?=e($_POST['username']??$dbu['username'])?>" required></label><label>Department<input name="department" value="<?=e($_POST['department']??($dbu['department']??''))?>"></label>
+<?php if($dbu['role']==='self'):?><label class="wide">Linked instructor profile<select name="instructor_id" required><option value="0">Choose your registered instructor profile</option><?php foreach($instructors as $person):?><option value="<?=$person['id']?>" <?=((int)($_POST['instructor_id']??$dbu['instructor_id'])===(int)$person['id'])?'selected':''?>><?=e($person['full_name'].' — '.$person['department'])?></option><?php endforeach;?></select><small class="muted">Choose the instructor name registered by the administrator. This connects your account to your confidential aggregate results.</small></label><?php endif;?>
+<label>New password (leave blank to keep current)<div class="password-wrap"><input id="profile-password" type="password" name="new_password" minlength="12" autocomplete="new-password"><button class="btn small secondary" type="button" onclick="togglePassword('profile-password',this)">Show</button></div></label><label>Confirm new password<div class="password-wrap"><input id="profile-password-confirm" type="password" name="confirm_password" minlength="12" autocomplete="new-password"><button class="btn small secondary" type="button" onclick="togglePassword('profile-password-confirm',this)">Show</button></div></label><div><button class="btn primary">Save profile</button></div></form></section><?php page_footer();?>
